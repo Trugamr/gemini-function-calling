@@ -1,41 +1,78 @@
 import { env } from "./lib/env";
-import { type Content, GoogleGenerativeAI } from "@google/generative-ai";
-import readline from "node:readline/promises";
+import {
+	FunctionDeclarationSchemaType,
+	GoogleGenerativeAI,
+	type Tool,
+} from "@google/generative-ai";
 
 const genAI = new GoogleGenerativeAI(env.GOOGLE_GENERATIVE_AI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
-const terminal = readline.createInterface({
-	input: process.stdin,
-	output: process.stdout,
+const model = genAI.getGenerativeModel({
+	model: "gemini-1.5-pro-latest",
+	systemInstruction:
+		"You are a helpful assistant that can answer questions and provide information.",
 });
 
-const contents: Content[] = [];
+const tools: Tool[] = [
+	{
+		functionDeclarations: [
+			{
+				name: "getTimeByTimezone",
+				parameters: {
+					type: FunctionDeclarationSchemaType.OBJECT,
+					properties: {
+						timeZone: {
+							type: FunctionDeclarationSchemaType.STRING,
+							description: "The timezone to get the time for",
+						},
+					},
+					required: ["timeZone"],
+				},
+			},
+		],
+	},
+];
 
-while (true) {
-	const prompt = await terminal.question("Enter a prompt: ");
-	contents.push({
-		role: "user",
-		parts: [{ text: prompt }],
-	});
+const functions = {
+	getTimeByTimezone({ timeZone }: { timeZone: string }) {
+		return {
+			time: new Date().toLocaleString("en-US", { timeZone }),
+		};
+	},
+};
 
-	const result = await model.generateContentStream({
-		contents,
-	});
+const chat = model.startChat({
+	tools,
+});
 
-	let answer = "";
-	process.stdout.write("Assistant: ");
+const { response } = await chat.sendMessage([
+	{
+		text: "What is current time of day i.e morning, afternoon, evening or night in India?",
+	},
+]);
 
-	for await (const delta of result.stream) {
-		const text = delta.text();
-		answer += text;
+// Check if model is asking for a tool
+const call = response.functionCalls()?.[0];
 
-		process.stdout.write(text);
-	}
+if (call) {
+	console.log(
+		`[DEBUG] Calling function: ${call.name} with args: ${JSON.stringify(
+			call.args,
+		)}`,
+	);
 
-	process.stdout.write("\n\n");
-	contents.push({
-		role: "model",
-		parts: [{ text: answer }],
-	});
+	const result = functions[call.name](call.args);
+
+	console.log("[DEBUG] Sending result to model");
+	const { response } = await chat.sendMessage([
+		{
+			functionResponse: {
+				name: call.name,
+				response: result,
+			},
+		},
+	]);
+
+	process.stdout.write(`Model: ${response.text()}`);
+} else {
+	process.stdout.write(`Model: ${response.text()}`);
 }
